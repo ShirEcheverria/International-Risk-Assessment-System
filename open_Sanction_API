@@ -1,0 +1,42 @@
+import requests
+import json
+from country_codes import country_codes
+
+OS_API_KEY = "c1adfd53d859be0245bd4fa03a1f98de"  # OpenSanctions API key
+
+class OpenSanctionsAPI:
+    def __init__(self, api_key):
+        self.api_key = api_key  # Initialize with API key
+
+    def search(self, name, entity_type, country=None):
+        headers = {
+            "Authorization": f"Apikey {self.api_key}",  # Set API key in headers
+        }
+
+        properties = {"name": [name]}  # Prepare the query with the name
+        if country:
+            properties["country"] = [country]  # Add country to query if provided
+
+        query = {
+            "queries": {
+                "q1": {
+                    "schema": entity_type,  # Set entity type (Person, Company, etc.)
+                    "properties": properties,
+                }
+            }
+        }
+
+        response = requests.post(
+            "https://api.opensanctions.org/match/default",  # API endpoint
+            headers=headers,
+            json=query,  # Send the query as JSON
+        )
+
+        if response.status_code != 200:
+            response.raise_for_status()  # Raise an error if the response status is not OK
+
+        results = response.json()["responses"]["q1"]["results"]  # Parse the JSON response
+        for result in results:
+            result['id'] = result.get('id', 'N/A')  # Add ID to each result
+        
+        return results
