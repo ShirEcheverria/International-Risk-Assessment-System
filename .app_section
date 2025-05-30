@@ -1,0 +1,248 @@
+import os
+import requests
+from tkinter import *
+from tkinter import ttk
+from tkinter import messagebox
+import json #for handling JSON responses from the API
+import matplotlib.pyplot as plt  # Import matplotlib for plotting
+import textwrap
+from country_codes import country_codes  # Import the dictionary of country codes
+
+OS_API_KEY = "c1adfd53d859be0245bd4fa03a1f98de"  # OpenSanctions API key
+
+class OpenSanctionsAPI:
+    def __init__(self, api_key):
+        self.api_key = api_key  # Initialize with API key
+
+    def search(self, name, entity_type, country=None):
+        headers = {
+            "Authorization": f"Apikey {self.api_key}",  # Set API key in headers
+        }
+
+        properties = {"name": [name]}  # Prepare the query with the name
+        if country:
+            properties["country"] = [country]  # Add country to query if provided
+
+        query = {
+            "queries": {
+                "q1": {
+                    "schema": entity_type,  # Set entity type (Person, Company, etc.)
+                    "properties": properties,
+                }
+            }
+        }
+
+        response = requests.post(
+            "https://api.opensanctions.org/match/default",  # API endpoint
+            headers=headers,
+            json=query,  # Send the query as JSON
+        )
+
+        if response.status_code != 200:
+            response.raise_for_status()  # Raise an error if the response status is not OK
+
+        results = response.json()["responses"]["q1"]["results"]  # Parse the JSON response
+        for result in results:
+            result['id'] = result.get('id', 'N/A')  # Add ID to each result
+        
+        return results
+
+class App:
+    def __init__(self, root, api):
+        self.api = api
+        self.root = root
+        self.root.title("OpenSanctions Integrated Personal Profile Monitoring Tool") 
+        self.create_widgets()
+
+    def create_widgets(self):
+        self.label_name = Label(self.root, text="Name:")  # Label for name input
+        self.label_name.grid(row=0, column=0)
+        self.entry_name = Entry(self.root)  # Entry for name input
+        self.entry_name.grid(row=0, column=1)
+
+        self.label_entity_type = Label(self.root, text="Entity type:")  # Label for entity type
+        self.label_entity_type.grid(row=1, column=0)
+        self.entity_type = StringVar()
+        self.entity_type.set("Person")  # Default selection for entity type
+        self.entity_type_menu = OptionMenu(self.root, self.entity_type, 
+                                           "Person", "Company", "Organization", 
+                                           "Position", "LegalEntity")
+        self.entity_type_menu.grid(row=1, column=1)
+
+        self.label_country = Label(self.root, text="Country (optional):")  # Label for country input
+        self.label_country.grid(row=2, column=0)
+        self.entry_country = Entry(self.root)  # Entry for country input
+        self.entry_country.grid(row=2, column=1)
+
+        self.button_search = Button(self.root, text="Search", command=self.search)  # Search button
+        self.button_search.grid(row=0, column=2, rowspan=3)
+
+        self.tree = ttk.Treeview(self.root, columns=('Type', 'Name', 'Country', 'Match'), show='headings')  
+        self.tree.heading('Type', text='Type')
+        self.tree.heading('Name', text='Name')
+        self.tree.heading('Country', text='Country')
+        self.tree.heading('Match', text='Match')
+        self.tree.bind("<Double-1>", self.on_double_click)
+        self.tree.grid(row=3, column=0, columnspan=3, sticky='nsew')
+
+        self.scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.tree.yview)  # Scrollbar for tree
+        self.tree.configure(yscroll=self.scrollbar.set)
+        self.scrollbar.grid(row=3, column=3, sticky='ns')
+
+    def search(self):
+        name = self.entry_name.get()  # Get the name from the entry
+        entity_type = self.entity_type.get()  # Get the entity type
+        country = self.entry_country.get()  # Get the country if provided
+
+        if not name:
+            messagebox.showerror("Error", "Name is required")  # Show error if name is not provided
+            return
+
+        try:
+            self.search_results = self.api.search(name, entity_type, country)  # Perform the search
+            self.display_results(self.search_results)  # Display the results
+            self.plot_bar_chart(self.search_results)  # Plot the bar chart
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def display_results(self, results):
+        for row in self.tree.get_children():
+            self.tree.delete(row)  # Clear previous results
+
+
+        for result in results:
+            properties = result.get('properties', {})
+            country_code = properties.get('country', ['n/a'])[0].lower()
+            country_name = country_codes.get(country_code, country_code.upper())  # Map the country code to country name
+            match_percentage = int(result.get('score', 0) * 100)  # Convert score to percentage
+            
+            self.tree.insert("", "end", values=(
+                result.get('schema', 'N/A'),
+                properties.get('name', ['N/A'])[0],
+                country_name,
+                f"{match_percentage}%"
+            ))
+
+    def on_double_click(self, event):
+        try:
+            item = self.tree.selection()[0]
+            values = self.tree.item(item, "values")
+            entity_id = self.get_entity_id(values[1])  # Get the entity ID
+            properties = self.get_additional_details(entity_id)  # Get additional details
+            self.show_details(values, properties)  # Show details in a new window
+        except IndexError:
+            messagebox.showerror("Error", "No item selected")
+
+    def get_additional_details(self, entity_id):
+        headers = {
+            "Authorization": f"Apikey {self.api.api_key}",  # Set API key in headers
+        }
+
+        response = requests.get(
+            f"https://api.opensanctions.org/entities/{entity_id}",  # API endpoint to get entity details
+            headers=headers,
+        )
+
+        if response.status_code != 200:
+            response.raise_for_status()  # Raise an error if the response status is not OK
+
+        entity_details = response.json()
+        properties = entity_details.get('properties', {})
+
+        additional_details = {
+            'Names': properties.get('name', ['N/A']),
+            'Aliases': properties.get('alias', ['N/A']),
+            'Nationalities': [country_codes.get(code, code) for code in properties.get('nationality', ['N/A'])],
+            'Birth Date': properties.get('birthDate', ['N/A']),
+            'Birth Place': properties.get('birthPlace', ['N/A']),
+            'Death Date': properties.get('deathDate', ['N/A']),
+            'Positions': properties.get('position', ['N/A']),
+            'Sources': properties.get('sourceUrl', ['N/A']),
+            'Last Modified': properties.get('modifiedAt', ['N/A']),
+            'Descriptions': properties.get('notes', ['N/A'])
+        }
+        return additional_details
+
+    def get_entity_id(self, name):
+        for result in self.search_results:
+            if result['properties']['name'][0] == name:
+                return result['id']  # Return the entity ID
+        return 'N/A'
+
+    def show_details(self, values, properties):
+        detail_window = Toplevel(self.root)
+        detail_window.title("Detail View")
+
+        detail_labels = [
+            'Type', 'Name', 'Country', 'Match'
+        ]
+        for i, label_text in enumerate(detail_labels):
+            label = Label(detail_window, text=f"{label_text}: {values[i]}")
+            label.grid(row=i, column=0, sticky=W)  # Create labels for each detail
+
+        for i, (key, value) in enumerate(properties.items(), start=len(values)):
+            Label(detail_window, text=f"{key}:").grid(row=i, column=0, sticky=W)  # Create labels for properties
+
+            # Create a frame for the text widget and scrollbar
+            frame = Frame(detail_window)
+            frame.grid(row=i, column=1, sticky=W, padx=5, pady=2)
+
+            # Create the text widget
+            text_widget = Text(frame, wrap=WORD, bg='lightgrey', relief=FLAT, height=2, width=90)
+            text_widget.insert(END, "\n".join(value) if isinstance(value, list) else value)
+            text_widget.configure(state=DISABLED)
+            text_widget.pack(side=LEFT, fill=BOTH, expand=True)
+
+            # Create the scrollbar
+            scrollbar = Scrollbar(frame, orient=VERTICAL, command=text_widget.yview)
+            scrollbar.pack(side=RIGHT, fill=Y)
+            text_widget.configure(yscrollcommand=scrollbar.set)
+
+    def plot_bar_chart(self, results):
+        names = []
+        match_percentages = []
+        colors = []
+
+        for result in results:
+            properties = result.get('properties', {})
+            name = properties.get('name', ['N/A'])[0]
+            wrapped_name = "\n".join(textwrap.wrap(name, 20))  # Divide el nombre en varias líneas si es muy largo
+            names.append(wrapped_name)
+
+            match_percentage = int(result.get('score', 0) * 100)  # Convert score to percentage
+            match_percentages.append(match_percentage)
+        
+            #Assign color based on match percentage
+            if match_percentage <= 50:
+                colors.append ('blue')
+            elif  51 <= match_percentage <= 80:
+                colors.append ('orange')
+            else:
+                colors.append ('red')
+
+        plt.figure(figsize=(10, 6))
+        bar_width = 0.5
+        bars = plt.bar(names, match_percentages, color= colors, width = bar_width)
+        plt.xlabel('Results Names')
+        plt.ylabel('Match Percentage')
+        plt.title('Match Result')
+        plt.xticks(rotation=45, ha='right')  # Rotate x-axis labels for better visibility
+        plt.tight_layout()
+
+        for bar in bars:
+            height = bar.get_height ()
+            plt.text (
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f'{height} %',
+                ha  ='center',      #plt.text function
+                va  = 'bottom'
+            )
+        plt.subplots_adjust(bottom=0.35)
+        plt.show()
+
+if __name__ == "__main__":
+    root = Tk()  # Create the main application window
+    api = OpenSanctionsAPI(OS_API_KEY)  # Create an instance of the OpenSanctionsAPI class with the API key
+    app = App(root, api)  # Create an instance of the App class, passing in the root window and API instance
+    root.mainloop()  # Start the main event loop
